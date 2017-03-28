@@ -1,0 +1,6 @@
+!.gitignore
+*.exe
+.vscode
+.DS_Store
+debug
+*.swp
