@@ -65,7 +65,7 @@ func main() {
 			select {
 			case <-t.C:
 				for _, s := range services {
-					err = resolver.Browse(s, "local.", chResult)
+					err = resolver.Browse(s, "local", chResult)
 					if err != nil {
 						log.Println("Failed to browse:", err.Error())
 					}
@@ -76,7 +76,6 @@ func main() {
 		}
 	}()
 
-	timer := time.NewTimer(time.Second * 60)
 	/* cache coherency
 	As a general rule, the recommended TTL value for Multicast DNS
 	resource records with a host name as the resource record’s name
@@ -89,21 +88,20 @@ func main() {
 	entries := make(map[string]*ServiceEntry)
 	for {
 		select {
-		case <-timer.C:
-			log.Printf("60s passed")
 		case r := <-chResult:
 			if entry, ok := entries[r.Instance]; !ok {
 				entries[r.Instance] = r
-				log.Printf("entry: %+v", r)
+				if r.Service == "_device-info._tcp" {
+					log.Printf("device_info: %+v", r)
+				}
 			} else {
 				if entry.HostName != "" {
 					// alway trust newer address
-					// we use unbuffered channel, so no mutex needed
-					if addr, ok := resolver.c.ipv4AddrCache[entry.HostName]; ok {
+					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
 						// note that entry is a pointer, so we can modify the struct
 						entry.AddrIPv4 = addr
 					}
-					if addr, ok := resolver.c.ipv6AddrCache[entry.HostName]; ok {
+					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
 						entry.AddrIPv6 = addr
 					}
 				}
@@ -112,8 +110,8 @@ func main() {
 			for _, v := range entries {
 				if v.AddrIPv4 != nil && v.HostName != "" {
 					if _, ok := hostnames[v.AddrIPv4.String()]; !ok {
-						txt, ok := resolver.c.deviceInfo[v.HostName]
-						if ok {
+						txt := resolver.c.getDeviceInfo(v.HostName)
+						if txt != "" {
 							model := queryiDeviceType(txt)
 							if model != "" {
 								log.Printf("%s:%s at %s", v.HostName, model, v.AddrIPv4.String())

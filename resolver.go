@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
-	//"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
 
@@ -72,52 +72,50 @@ func defaultParams(service string) *LookupParams {
 
 // Client structure incapsulates both IPv4/IPv6 UDP connections
 type client struct {
-	ipv4conn      *net.UDPConn
-	ipv6conn      *net.UDPConn
-	scopeIDs      []int // for ipv6 link-local multicast
-	closed        bool
-	closedCh      chan bool
-	closeLock     sync.Mutex
-	ipv4AddrCache map[string]net.IP
-	ipv6AddrCache map[string]net.IP
-	deviceInfo    map[string]string
+	ipv4conn       *net.UDPConn
+	ipv6conn       *net.UDPConn
+	scopeIDs       []int // for ipv6 link-local multicast
+	closed         bool
+	closedCh       chan bool
+	closeLock      sync.Mutex
+	ipv4Lock       sync.Mutex
+	ipv6Lock       sync.Mutex
+	ipv4AddrCache  map[string]net.IP
+	ipv6AddrCache  map[string]net.IP
+	deviceInfoLock sync.Mutex
+	deviceInfo     map[string]string
 }
 
 // Client structure constructor
 func newClient(iface *net.Interface) (*client, error) {
-	var scopeIDs []int
-	var ipv6conn *net.UDPConn
-	ipv4conn, err := net.ListenMulticastUDP("udp4", iface, ipv4Addr)
+	ipv4conn, err := net.ListenUDP("udp4", mdnsWildcardAddrIPv4)
 	if err != nil {
-		log.Printf("Failed to bind to udp4 port: %v", err)
+		log.Printf("[ERR] bonjour: Failed to bind to udp4 port: %v", err)
 	}
+	ipv6conn, err := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)
+	if err != nil {
+		log.Printf("[ERR] bonjour: Failed to bind to udp6 port: %v", err)
+	}
+	if ipv4conn == nil && ipv6conn == nil {
+		return nil, fmt.Errorf("[ERR] bonjour: Failed to bind to any udp port!")
+	}
+
+	// Join multicast groups to receive announcements from server
+	p1 := ipv4.NewPacketConn(ipv4conn)
+	p2 := ipv6.NewPacketConn(ipv6conn)
+	var scopeIDs []int
 	if iface != nil {
-		//p := ipv4.NewPacketConn(ipv4conn)
-		//if err := p.SetMulticastInterface(iface); err != nil {
-		//	return nil, err
-		//}
-
-		// ListenMulticastUDP uses the system-assigned multicast interface
-		// when sencond argument is nil, it fails if no interface specified
-		// on OS X/Windows since no default ipv6 link-local multicast interface
-		ipv6conn, err = net.ListenMulticastUDP("udp6", iface, ipv6Addr)
-		if err != nil {
-			log.Printf("Failed to bind to udp6 port: %v", err)
+		if err := p1.JoinGroup(iface, &net.UDPAddr{IP: mdnsGroupIPv4}); err != nil {
+			return nil, err
 		}
-
-		scopeIDs = append(scopeIDs, iface.Index)
+		if err := p2.JoinGroup(iface, &net.UDPAddr{IP: mdnsGroupIPv6}); err != nil {
+			return nil, err
+		}
 	} else {
-		ipv6conn, e := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)
-		if e != nil || ipv6conn == nil {
-			log.Printf("Failed to bind to udp6 port: %v", err)
-		}
-		p := ipv6.NewPacketConn(ipv6conn)
 		ifaces, err := net.Interfaces()
 		if err != nil {
 			return nil, err
 		}
-
-		// no default ipv6 link-local multicast interface
 		for _, iface := range ifaces {
 			addrs, err := iface.Addrs()
 			if err != nil || addrs == nil ||
@@ -126,7 +124,7 @@ func newClient(iface *net.Interface) (*client, error) {
 				(iface.Flags&net.FlagUp != net.FlagUp) {
 				continue
 			}
-			// exclude interface which has only ipv6 link-local addr, for example, awdl0 on OS X, tunnel on Windows
+			// exclude interface which has link-local addr but no ipv4 addr like awdl0
 			hasIPv4Addr := false
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
@@ -138,13 +136,16 @@ func newClient(iface *net.Interface) (*client, error) {
 				continue
 			}
 
+			if err := p1.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv4}); err != nil {
+				log.Printf("can't join ipv4 multicast group on interface %s", iface.Name)
+			}
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.IsLinkLocalUnicast() {
 					// if the interface has a link-local ipv6 address
-					if err := p.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv6}); err != nil {
+					if err := p2.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv6}); err != nil {
 						log.Printf("can't join ipv6 linklocal multicast group on interface %s", iface.Name)
 					} else {
-						// using interface index as Scope ID
+						// using index as Scope ID
 						scopeIDs = append(scopeIDs, iface.Index)
 						break
 					}
@@ -152,7 +153,6 @@ func newClient(iface *net.Interface) (*client, error) {
 			}
 		}
 	}
-
 	c := &client{
 		ipv4conn:      ipv4conn,
 		ipv6conn:      ipv6conn,
@@ -160,6 +160,7 @@ func newClient(iface *net.Interface) (*client, error) {
 		closedCh:      make(chan bool),
 		ipv4AddrCache: make(map[string]net.IP),
 		ipv6AddrCache: make(map[string]net.IP),
+		deviceInfo:    make(map[string]string),
 	}
 
 	return c, nil
@@ -214,7 +215,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					} else if strings.Contains(rr.Hdr.Name, ".in-addr.arpa") {
 						// always trust newer address
 						s := reverseIPv4(strings.Replace(rr.Hdr.Name, ".in-addr.arpa", "", 1))
-						c.ipv4AddrCache[rr.Ptr] = net.ParseIP(trimDot(s))
+						c.setIPv4AddrCache(rr.Ptr, net.ParseIP(trimDot(s)))
 					} else if strings.Contains(rr.Hdr.Name, "ip6.arpa") {
 						// TODO pull out IPv6
 					}
@@ -236,46 +237,43 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					entries[rr.Hdr.Name].Port = int(rr.Port)
 					entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 				case *dns.TXT:
+					// we have little interest in TXT record except _device_info
 					// note the _device-info._tcp pseudo service, it's a TXT record
 					if strings.Contains(rr.Hdr.Name, "_device-info._tcp.") {
 						hostName := strings.Replace(rr.Hdr.Name, "_device-info._tcp.", "", 1)
 						if len(rr.Txt) > 0 {
-							c.deviceInfo[hostName] = rr.Txt[0]
+							c.setDeviceInfo(c.deviceInfo[hostName], rr.Txt[0])
 						}
-					}
-					// we have little interest in TXT record except _device_info
-					/*else {
-						ss = strings.Split(rr.Hdr.Name, ".")
+						ss := strings.Split(rr.Hdr.Name, ".")
 						if len(ss) < 3 {
-							continue
+							break
 						}
-						instanceName = ss[0]
-						serviceName = ss[1] + "." + ss[2]
+						instanceName := ss[0]
+						if _, ok := entries[rr.Hdr.Name]; !ok {
+							entries[rr.Hdr.Name] = NewServiceEntry(
+								instanceName,
+								"_device-info._tcp",
+								"local")
+						}
+						entries[rr.Hdr.Name].Text = rr.Txt
+						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 					}
-					if _, ok := entries[rr.Hdr.Name]; !ok {
-						entries[rr.Hdr.Name] = NewServiceEntry(
-							instanceName,
-							serviceName,
-							"local")
-					}
-					entries[rr.Hdr.Name].Text = rr.Txt
-					entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl */
 					// TODO type NSEC, not necessary?
 				case *dns.A:
 					for k, e := range entries {
-						if e.HostName == rr.Hdr.Name && entries[k].AddrIPv4 == nil {
+						if e.HostName == rr.Hdr.Name {
+							// always use newer addr
 							entries[k].AddrIPv4 = rr.A
 						}
 					}
-					// always use newer addr
-					c.ipv4AddrCache[rr.Hdr.Name] = rr.A
+					c.setIPv4AddrCache(rr.Hdr.Name, rr.A)
 				case *dns.AAAA:
 					for k, e := range entries {
-						if e.HostName == rr.Hdr.Name && entries[k].AddrIPv6 == nil {
+						if e.HostName == rr.Hdr.Name {
 							entries[k].AddrIPv6 = rr.AAAA
 						}
 					}
-					c.ipv6AddrCache[rr.Hdr.Name] = rr.AAAA
+					c.setIPv6AddrCache(rr.Hdr.Name, rr.AAAA)
 				}
 			}
 		}
@@ -286,22 +284,70 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					delete(entries, k)
 					continue
 				}
-				if e.AddrIPv4 == nil {
-					if v, ok := c.ipv4AddrCache[k]; ok {
-						e.AddrIPv4 = v
-					}
-				}
-				if e.AddrIPv6 == nil {
-					if v, ok := c.ipv6AddrCache[k]; ok {
-						e.AddrIPv6 = v
-					}
-				}
+				//if e.AddrIPv4 == nil {
+				//	if c.getIPv4AddrCache(k)
+				//		e.AddrIPv4 = v
+				//	}
+				//}
+				//if e.AddrIPv6 == nil {
+				//	if v, ok := c.ipv6AddrCache[k]; ok {
+				//		e.AddrIPv6 = v
+				//	}
+				//}
 				result <- e
 			}
 			// reset entries
 			entries = make(map[string]*ServiceEntry)
 		}
 	}
+}
+
+func (c *client) getIPv4AddrCache(host string) net.IP {
+	c.ipv4Lock.Lock()
+	defer c.ipv4Lock.Unlock()
+	if ip, ok := c.ipv4AddrCache[host]; ok {
+		return ip
+	}
+
+	return nil
+}
+
+func (c *client) setIPv4AddrCache(host string, ipv4 net.IP) {
+	c.ipv4Lock.Lock()
+	defer c.ipv4Lock.Unlock()
+	c.ipv4AddrCache[host] = ipv4
+}
+
+func (c *client) getIPv6AddrCache(host string) net.IP {
+	c.ipv6Lock.Lock()
+	defer c.ipv6Lock.Unlock()
+	if ip, ok := c.ipv6AddrCache[host]; ok {
+		return ip
+	}
+
+	return nil
+}
+
+func (c *client) setIPv6AddrCache(host string, ipv6 net.IP) {
+	c.ipv6Lock.Lock()
+	defer c.ipv6Lock.Unlock()
+	c.ipv6AddrCache[host] = ipv6
+}
+
+func (c *client) setDeviceInfo(host, info string) {
+	c.deviceInfoLock.Lock()
+	defer c.deviceInfoLock.Unlock()
+	c.deviceInfo[host] = info
+}
+
+func (c *client) getDeviceInfo(host string) string {
+	c.deviceInfoLock.Lock()
+	defer c.deviceInfoLock.Unlock()
+	if info, ok := c.deviceInfo[host]; ok {
+		return info
+	}
+
+	return ""
 }
 
 // Shutdown client will close currently open connections & channel
@@ -404,7 +450,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 		addr := ipv6Addr
 		for _, scope := range c.scopeIDs {
 			addr.Zone = fmt.Sprintf("%d", scope)
-			if n, err := c.ipv6conn.WriteTo(buf, addr); err != nil {
+			if _, err := c.ipv6conn.WriteTo(buf, addr); err != nil {
 				log.Printf("c.ipv6conn.WriteTo error: %v", err)
 			}
 		}
