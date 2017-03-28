@@ -107,8 +107,8 @@ func newClient(iface *net.Interface) (*client, error) {
 
 		scopeIDs = append(scopeIDs, iface.Index)
 	} else {
-		ipv6conn, err := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)
-		if err != nil {
+		ipv6conn, e := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)
+		if e != nil || ipv6conn == nil {
 			log.Printf("Failed to bind to udp6 port: %v", err)
 		}
 		p := ipv6.NewPacketConn(ipv6conn)
@@ -201,7 +201,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						m.SetQuestion(rr.Ptr, dns.TypePTR)
 						m.RecursionDesired = false
 						if err := c.sendQuery(m); err != nil {
-							log.Printf("[ERR] mdns: Failed to query service type %s", rr.Ptr)
+							log.Printf("Failed to query service type %s", rr.Ptr)
 						}
 					} else if strings.HasSuffix(rr.Ptr, rr.Hdr.Name) {
 						// service instance
@@ -209,7 +209,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						m.SetQuestion(rr.Ptr, dns.TypeANY)
 						m.RecursionDesired = false
 						if err := c.sendQuery(m); err != nil {
-							log.Printf("[ERR] mdns: Failed to query instance %s", rr.Ptr)
+							log.Printf("Failed to query instance %s", rr.Ptr)
 						}
 					} else if strings.Contains(rr.Hdr.Name, ".in-addr.arpa") {
 						// always trust newer address
@@ -404,7 +404,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 		addr := ipv6Addr
 		for _, scope := range c.scopeIDs {
 			addr.Zone = fmt.Sprintf("%d", scope)
-			if _, err := c.ipv6conn.WriteTo(buf, ipv6Addr); err != nil {
+			if n, err := c.ipv6conn.WriteTo(buf, addr); err != nil {
 				log.Printf("c.ipv6conn.WriteTo error: %v", err)
 			}
 		}

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-var entries map[string]*ServiceEntry
-
 func main() {
 	var ifaceName = flag.String("i", "", "interface name")
 	var logFile = flag.String("o", "", "log file")
@@ -88,7 +86,7 @@ func main() {
 	The recommended TTL value for other Multicast DNS resource records is
 	75 minutes(TTL=4500). */
 	hostnames := make(map[string]string)
-	entries = make(map[string]*ServiceEntry)
+	entries := make(map[string]*ServiceEntry)
 	for {
 		select {
 		case <-timer.C:
@@ -100,16 +98,14 @@ func main() {
 			} else {
 				if entry.HostName != "" {
 					// alway trust newer address
-					// TODO mutex
+					// we use unbuffered channel, so no mutex needed
 					if addr, ok := resolver.c.ipv4AddrCache[entry.HostName]; ok {
+						// note that entry is a pointer, so we can modify the struct
 						entry.AddrIPv4 = addr
 					}
 					if addr, ok := resolver.c.ipv6AddrCache[entry.HostName]; ok {
 						entry.AddrIPv6 = addr
 					}
-
-					// entry is a copy
-					entries[r.Instance] = entry
 				}
 			}
 
