@@ -12,6 +12,7 @@ import (
 func main() {
 	var ifaceName = flag.String("i", "", "interface name")
 	var logFile = flag.String("o", "", "log file")
+	var dumpEntry = flag.Bool("d", false, "dump all service entries")
 	flag.Parse()
 
 	if len(*logFile) != 0 {
@@ -90,9 +91,12 @@ func main() {
 		select {
 		case r := <-chResult:
 			if entry, ok := entries[r.Instance]; !ok {
+				if *dumpEntry {
+					log.Printf("service: %s", r.ServiceInstanceName())
+				}
 				entries[r.Instance] = r
 				if r.Service == "_device-info._tcp" {
-					log.Printf("device_info: %+v", r)
+					log.Printf("device_info: %s: %v", r.Instance, r.Text)
 				}
 			} else {
 				if entry.HostName != "" {
