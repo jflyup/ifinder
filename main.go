@@ -92,7 +92,7 @@ func main() {
 		case r := <-chResult:
 			if entry, ok := entries[r.Instance]; !ok {
 				if *dumpEntry {
-					log.Printf("service: %s", r.ServiceInstanceName())
+					log.Printf("service: %s at %s", r.ServiceInstanceName(), r.HostName)
 				}
 				entries[r.Instance] = r
 				if r.Service == "_device-info._tcp" {
