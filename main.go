@@ -90,19 +90,19 @@ func main() {
 	for {
 		select {
 		case r := <-chResult:
-			if entry, ok := entries[r.Instance]; !ok {
+			if entry, ok := entries[r.ServiceInstanceName()]; !ok {
 				if *dumpEntry {
-					log.Printf("service: %s at %s", r.ServiceInstanceName(), r.HostName)
+					log.Printf("service: %s ipv4: %v ipv6: %v, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Text, r.HostName)
 				}
-				entries[r.Instance] = r
+				entries[r.ServiceInstanceName()] = r
 				if r.Service == "_device-info._tcp" {
 					log.Printf("device_info: %s: %v", r.Instance, r.Text)
 				}
 			} else {
 				if entry.HostName != "" {
-					// alway trust newer address
+					// alway trust newer address because of expired cache
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
-						// note that entry is a pointer, so we can modify the struct
+						// note that entry is a pointer, so we can modify the entry directly
 						entry.AddrIPv4 = addr
 					}
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {

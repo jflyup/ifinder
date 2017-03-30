@@ -3,6 +3,9 @@ package main
 import "strings"
 
 var BoardConfigList = map[string]string{
+	"J1AP":   "iPad (3rd generation)",
+	"J33IAP": "revised version of the Apple TV (3rd generation)",
+	"J42dAP": "Apple TV (4th generation)",
 	"J71AP":  "Wifi only iPad Air",
 	"J72AP":  "Cellular iPad Air",
 	"J73AP":  "iPad Air",
@@ -16,6 +19,11 @@ var BoardConfigList = map[string]string{
 	"J97AP":  "iPad mini 4",
 	"J98aAP": "iPad Pro (12.9 inch) (iPad6,7 model)",
 	"J99aAP": "iPad Pro (12.9 inch) (iPad6,8 model)",
+	"K93AP":  "iPad 2",
+	"K94AP":  "iPad 2",
+	"P101AP": "iPad (4th generation)",
+	"P105AP": "iPad mini",
+	"P107AP": "iPad mini",
 	// iPhones and iPods Apple Watches
 	"N18AP":  "iPod touch 3G",
 	"N27aAP": "Apple Watch 38mm (Watch1,1 model)",
@@ -39,18 +47,22 @@ var BoardConfigList = map[string]string{
 	"N71mAP": "iPhone 6s which uses the TSMC A9 processor",
 	"N72AP":  "second generation iPod touch",
 	"N74AP":  "Apple Watch Series 2 38mm (Watch2,3 model)",
+	"N94AP":  "iPhone 4S",
 	"D101AP": "iPhone 7",
 	"D10AP":  "iPhone 7",
 	"D111AP": "iPhone 7 Plus",
 	"D11AP":  "iPhone 7 Plus",
 }
 
-var services = []string{"_apple-mobdev2._tcp",
+var services = []string{
+	"_apple-mobdev2._tcp",
 	"_afpovertcp._tcp",
 	"_workstation._tcp",
 	"_smb._tcp",
 	"_rfb._tcp",
 	"_homekit._tcp",
+	"_sftp-ssh._tcp",
+	"_ssh._tcp",
 }
 
 func queryiDeviceType(txt string) string {
