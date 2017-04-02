@@ -88,6 +88,10 @@ type client struct {
 
 // Client structure constructor
 func newClient(iface *net.Interface) (*client, error) {
+	// The source UDP port in all Multicast DNS responses MUST be 5353 (the
+	// well-known port assigned to mDNS). Multicast DNS implementations
+	// MUST silently ignore any Multicast DNS responses they receive where
+	// the source UDP port is not 5353.
 	ipv4conn, err := net.ListenUDP("udp4", mdnsWildcardAddrIPv4)
 	if err != nil {
 		log.Printf("[ERR] bonjour: Failed to bind to udp4 port: %v", err)
@@ -179,7 +183,6 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 
 	// Iterate through channels from listeners goroutines
 	var entries map[string]*ServiceEntry
-	//sentEntries = make(map[string]*ServiceEntry)
 	for !c.closed {
 		select {
 		case <-c.closedCh:
@@ -221,7 +224,8 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					}
 
 				case *dns.SRV:
-					// parse name
+					// name compression is processed by github.com/miekg/dns
+					// parse name, TODO: convert octet-based label to unicode string
 					ss := strings.Split(rr.Hdr.Name, ".")
 					if len(ss) < 3 {
 						continue
@@ -254,6 +258,9 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 								instanceName,
 								"_device-info._tcp",
 								"local")
+						}
+						if entries[rr.Hdr.Name].HostName == "" {
+							entries[rr.Hdr.Name].HostName = hostName
 						}
 						entries[rr.Hdr.Name].Text = rr.Txt
 						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
@@ -396,7 +403,6 @@ func (c *client) recv(l *net.UDPConn, msgCh chan *dns.Msg) {
 }
 
 // Performs the actual query by service name (browse) or service instance name (lookup),
-// start response listeners goroutines and loops over the entries channel.
 func (c *client) query(params *LookupParams) error {
 	var serviceName, serviceInstanceName string
 	serviceName = fmt.Sprintf("%s.%s.", trimDot(params.Service), trimDot(params.Domain))
@@ -413,12 +419,12 @@ func (c *client) query(params *LookupParams) error {
 				dns.Question{serviceInstanceName, params.Rrtype, dns.ClassINET},
 			}
 		} else {
+			// query ANY type?
 			m.Question = []dns.Question{
 				dns.Question{serviceInstanceName, dns.TypeSRV, dns.ClassINET},
 				dns.Question{serviceInstanceName, dns.TypeTXT, dns.ClassINET},
 			}
 		}
-		// query ANY type?
 		m.RecursionDesired = false
 	} else {
 		m.SetQuestion(serviceName, dns.TypePTR)
@@ -438,7 +444,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 	if err != nil {
 		return err
 	}
-	// TODO support unicast
+	// ignores the Query ID field
 	buf[0] = 0
 	buf[1] = 0
 	if c.ipv4conn != nil {

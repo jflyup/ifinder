@@ -95,9 +95,6 @@ func main() {
 					log.Printf("service: %s ipv4: %v ipv6: %v, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Text, r.HostName)
 				}
 				entries[r.ServiceInstanceName()] = r
-				if r.Service == "_device-info._tcp" {
-					log.Printf("device_info: %s: %v", r.Instance, r.Text)
-				}
 			} else {
 				if entry.HostName != "" {
 					// alway trust newer address because of expired cache
