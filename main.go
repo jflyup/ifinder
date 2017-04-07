@@ -92,7 +92,7 @@ func main() {
 		case r := <-chResult:
 			if entry, ok := entries[r.ServiceInstanceName()]; !ok {
 				if *dumpEntry {
-					log.Printf("service: %s ipv4: %v ipv6: %v, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Text, r.HostName)
+					log.Printf("service: %s ipv4: %v ipv6: %v, TTL: %d, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.TTL, r.Text, r.HostName)
 				}
 				entries[r.ServiceInstanceName()] = r
 			} else {
@@ -111,20 +111,10 @@ func main() {
 			for _, v := range entries {
 				if v.AddrIPv4 != nil && v.HostName != "" {
 					if _, ok := hostnames[v.AddrIPv4.String()]; !ok {
-						txt := resolver.c.getDeviceInfo(v.HostName)
-						if txt != "" {
-							model := queryiDeviceType(txt)
-							if model != "" {
-								log.Printf("%s:%s at %s", v.HostName, model, v.AddrIPv4.String())
-							} else {
-								log.Printf("%s:%v at %s", v.HostName, txt, v.AddrIPv4.String())
-							}
-						} else {
-							log.Printf("%s at %s", v.HostName, v.AddrIPv4.String())
-						}
-
-						hostnames[v.AddrIPv4.String()] = v.HostName
+						log.Printf("%s at %s", v.HostName, v.AddrIPv4.String())
 					}
+
+					hostnames[v.AddrIPv4.String()] = v.HostName
 				}
 			}
 		}

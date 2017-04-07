@@ -4,7 +4,8 @@ import "strings"
 
 var BoardConfigList = map[string]string{
 	"J1AP":   "iPad (3rd generation)",
-	"J33IAP": "revised version of the Apple TV (3rd generation)",
+	"J33AP":  "Apple TV (3rd generation), early 2012",
+	"J33IAP": "revised version of the Apple TV (3rd generation), early 2013",
 	"J42dAP": "Apple TV (4th generation)",
 	"J71AP":  "Wifi only iPad Air",
 	"J72AP":  "Cellular iPad Air",
@@ -48,6 +49,7 @@ var BoardConfigList = map[string]string{
 	"N72AP":  "second generation iPod touch",
 	"N74AP":  "Apple Watch Series 2 38mm (Watch2,3 model)",
 	"N94AP":  "iPhone 4S",
+	"N102AP": "iPod touch (6th generation)",
 	"D101AP": "iPhone 7",
 	"D10AP":  "iPhone 7",
 	"D111AP": "iPhone 7 Plus",

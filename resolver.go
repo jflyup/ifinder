@@ -180,6 +180,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 	if c.ipv6conn != nil {
 		go c.recv(c.ipv6conn, msgCh)
 	}
+	ptrEntries := make(map[string]int)
 
 	// Iterate through channels from listeners goroutines
 	var entries map[string]*ServiceEntry
@@ -209,6 +210,10 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						}
 					} else if strings.HasSuffix(rr.Ptr, rr.Hdr.Name) {
 						// service instance
+						if _, ok := ptrEntries[rr.Ptr]; !ok {
+							log.Printf("Ptr: %+v", rr)
+							ptrEntries[rr.Ptr] = 1
+						}
 						m := new(dns.Msg)
 						m.SetQuestion(rr.Ptr, dns.TypeANY)
 						m.RecursionDesired = false
@@ -225,10 +230,19 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 
 				case *dns.SRV:
 					// name compression is processed by github.com/miekg/dns
-					// parse name, TODO: convert octet-based label to unicode string
+					// parse name, TODO: convert decimal base label to unicode string
+					// TODO split string without splitting escaped character
 					ss := strings.Split(rr.Hdr.Name, ".")
 					if len(ss) < 3 {
 						continue
+					}
+
+					for _, s := range ss {
+						if len(s) > 1 && s[len(s)-1] == 92 {
+							log.Printf("original service %+v", rr)
+							break
+						}
+
 					}
 					// use rr.Hdr.Name as key since one host can publish multiple services
 					if _, ok := entries[rr.Hdr.Name]; !ok {
@@ -244,6 +258,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					// we have little interest in TXT record except _device_info
 					// note the _device-info._tcp pseudo service, it's a TXT record
 					if strings.Contains(rr.Hdr.Name, "_device-info._tcp.") {
+						// TODO not hostname
 						hostName := strings.Replace(rr.Hdr.Name, "_device-info._tcp.", "", 1)
 						if len(rr.Txt) > 0 {
 							c.setDeviceInfo(c.deviceInfo[hostName], rr.Txt[0])
@@ -258,9 +273,6 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 								instanceName,
 								"_device-info._tcp",
 								"local")
-						}
-						if entries[rr.Hdr.Name].HostName == "" {
-							entries[rr.Hdr.Name].HostName = hostName
 						}
 						entries[rr.Hdr.Name].Text = rr.Txt
 						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
