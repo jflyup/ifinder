@@ -230,30 +230,19 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 
 				case *dns.SRV:
 					// name compression is processed by github.com/miekg/dns
-					// parse name, TODO: convert decimal base label to unicode string
-					// TODO split string without splitting escaped character
-					ss := strings.Split(rr.Hdr.Name, ".")
-					if len(ss) < 3 {
-						continue
-					}
-
-					for _, s := range ss {
-						if len(s) > 1 && s[len(s)-1] == 92 {
-							log.Printf("original service %+v", rr)
-							break
+					// TODO: instance name with unicode is converted to decimal base label
+					if domain, st, instance, err := parseServiceName(rr.Hdr.Name); err == nil {
+						// use rr.Hdr.Name as key since one host can publish multiple services
+						if _, ok := entries[rr.Hdr.Name]; !ok {
+							entries[rr.Hdr.Name] = NewServiceEntry(
+								instance,
+								st,
+								domain)
 						}
-
+						entries[rr.Hdr.Name].HostName = rr.Target
+						entries[rr.Hdr.Name].Port = int(rr.Port)
+						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 					}
-					// use rr.Hdr.Name as key since one host can publish multiple services
-					if _, ok := entries[rr.Hdr.Name]; !ok {
-						entries[rr.Hdr.Name] = NewServiceEntry(
-							ss[0],
-							ss[1]+"."+ss[2],
-							"local")
-					}
-					entries[rr.Hdr.Name].HostName = rr.Target
-					entries[rr.Hdr.Name].Port = int(rr.Port)
-					entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 				case *dns.TXT:
 					// we have little interest in TXT record except _device_info
 					// note the _device-info._tcp pseudo service, it's a TXT record
@@ -263,19 +252,16 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						if len(rr.Txt) > 0 {
 							c.setDeviceInfo(c.deviceInfo[hostName], rr.Txt[0])
 						}
-						ss := strings.Split(rr.Hdr.Name, ".")
-						if len(ss) < 3 {
-							break
+						if domain, st, instance, err := parseServiceName(rr.Hdr.Name); err == nil {
+							if _, ok := entries[rr.Hdr.Name]; !ok {
+								entries[rr.Hdr.Name] = NewServiceEntry(
+									instance,
+									"_device-info._tcp",
+									"local")
+							}
+							entries[rr.Hdr.Name].Text = rr.Txt
+							entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 						}
-						instanceName := ss[0]
-						if _, ok := entries[rr.Hdr.Name]; !ok {
-							entries[rr.Hdr.Name] = NewServiceEntry(
-								instanceName,
-								"_device-info._tcp",
-								"local")
-						}
-						entries[rr.Hdr.Name].Text = rr.Txt
-						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 					}
 					// TODO type NSEC, not necessary?
 				case *dns.A:

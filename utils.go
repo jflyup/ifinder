@@ -67,21 +67,47 @@ var services = []string{
 	"_ssh._tcp",
 }
 
-func queryiDeviceType(txt string) string {
-	typ := ""
+func queryiDeviceType(txt string) (specs string) {
 	if nPos := strings.Index(txt, "model="); nPos != -1 {
-		model := txt[nPos+6:]
-		if name, ok := BoardConfigList[model]; ok {
-			typ = name
+		model := txt[nPos+len("model="):]
+		if v, ok := BoardConfigList[model]; ok {
+			specs = v
 		}
 	}
 
-	return typ
+	return
 }
 
 // trimDot is used to trim the dots from the start or end of a string
 func trimDot(s string) string {
 	return strings.Trim(s, ".")
+}
+
+// becasue service instance name string may contain escaped dot, so we can't simply
+// call strings.Split(name, ".")
+func parseServiceName(name string) (domain, st, instance string, err error) {
+	s := strings.Trim(name, ".")
+	l := len(s)
+	var ss []string
+	for {
+		pos := strings.LastIndex(s[:l], ".")
+		if pos != -1 {
+			ss = append(ss, s[pos+1:l])
+			l = pos
+			if len(ss) >= 3 {
+				// done
+				domain = ss[0]
+				st = ss[2] + "." + ss[1]
+				instance = s[:l]
+				break
+			}
+		} else {
+			err = errors.New("illegal service instance")
+			break
+		}
+	}
+
+	return
 }
 
 func reverseIPv4(s string) string {
