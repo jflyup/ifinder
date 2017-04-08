@@ -24,6 +24,7 @@ func main() {
 		log.SetOutput(f)
 	}
 
+	log.Printf("start scanning:")
 	var resolver *Resolver
 	var err error
 	if *ifaceName != "" {
@@ -92,6 +93,7 @@ func main() {
 		case r := <-chResult:
 			if entry, ok := entries[r.ServiceInstanceName()]; !ok {
 				if *dumpEntry {
+					// TODO ipv4 may change
 					log.Printf("service: %s ipv4: %v ipv6: %v, TTL: %d, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.TTL, r.Text, r.HostName)
 				}
 				entries[r.ServiceInstanceName()] = r

@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 var BoardConfigList = map[string]string{
 	"J1AP":   "iPad (3rd generation)",

@@ -94,14 +94,14 @@ func newClient(iface *net.Interface) (*client, error) {
 	// the source UDP port is not 5353.
 	ipv4conn, err := net.ListenUDP("udp4", mdnsWildcardAddrIPv4)
 	if err != nil {
-		log.Printf("[ERR] bonjour: Failed to bind to udp4 port: %v", err)
+		log.Printf("Failed to bind to udp4 port: %v", err)
 	}
 	ipv6conn, err := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)
 	if err != nil {
-		log.Printf("[ERR] bonjour: Failed to bind to udp6 port: %v", err)
+		log.Printf("Failed to bind to udp6 port: %v", err)
 	}
 	if ipv4conn == nil && ipv6conn == nil {
-		return nil, fmt.Errorf("[ERR] bonjour: Failed to bind to any udp port!")
+		return nil, fmt.Errorf("failed to bind to any udp port")
 	}
 
 	// Join multicast groups to receive announcements from server
@@ -242,6 +242,8 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						entries[rr.Hdr.Name].HostName = rr.Target
 						entries[rr.Hdr.Name].Port = int(rr.Port)
 						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
+					} else {
+						log.Printf("illegal service instance: %s", rr.Hdr.Name)
 					}
 				case *dns.TXT:
 					// we have little interest in TXT record except _device_info
@@ -252,7 +254,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						if len(rr.Txt) > 0 {
 							c.setDeviceInfo(c.deviceInfo[hostName], rr.Txt[0])
 						}
-						if domain, st, instance, err := parseServiceName(rr.Hdr.Name); err == nil {
+						if _, _, instance, err := parseServiceName(rr.Hdr.Name); err == nil {
 							if _, ok := entries[rr.Hdr.Name]; !ok {
 								entries[rr.Hdr.Name] = NewServiceEntry(
 									instance,
