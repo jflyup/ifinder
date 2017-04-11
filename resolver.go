@@ -231,7 +231,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 				case *dns.SRV:
 					// name compression is processed by github.com/miekg/dns
 					// TODO: instance name with unicode is converted to decimal base label
-					if domain, st, instance, err := parseServiceName(rr.Hdr.Name); err == nil {
+					if instance, st, domain, err := parseServiceName(rr.Hdr.Name); err == nil {
 						// use rr.Hdr.Name as key since one host can publish multiple services
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(
@@ -246,30 +246,39 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						log.Printf("illegal service instance: %s", rr.Hdr.Name)
 					}
 				case *dns.TXT:
-					// we have little interest in TXT record except _device_info
-					// note the _device-info._tcp pseudo service, it's a TXT record
-					if strings.Contains(rr.Hdr.Name, "_device-info._tcp.") {
-						// TODO not hostname
-						hostName := strings.Replace(rr.Hdr.Name, "_device-info._tcp.", "", 1)
+					// we have little interest in TXT record except _device_info._tcp
+					// pseudo service (it's a TXT record)
+
+					// this syntax sugar is so sweet
+					if pos := strings.Index(rr.Hdr.Name, "._device-info._tcp."); pos != -1 {
+						// it's tricky to connect this TXT record with a host.
+						// Typically, the first DNS name label is the default service instance name
+						// and can contain any Unicode characters encoded in UTF-8.
+						// you know there are always exceptions when we say typically.
+						// iPhone/iPad announces some services(such as _apple-mobdev2._tcp, _homekit._tcp)
+						// using special instance name(for example,
+						// 8F6A27C9-D8D8-5AEF-A290-B47710052FF4._homekit._tcp.local),
+						// then this TXT record chooses another instance name or use hostname as
+						// instance name.
+						instanceName := rr.Hdr.Name[:pos]
 						if len(rr.Txt) > 0 {
-							c.setDeviceInfo(c.deviceInfo[hostName], rr.Txt[0])
+							c.setDeviceInfo(c.deviceInfo[instanceName], rr.Txt[0])
 						}
-						if _, _, instance, err := parseServiceName(rr.Hdr.Name); err == nil {
-							if _, ok := entries[rr.Hdr.Name]; !ok {
-								entries[rr.Hdr.Name] = NewServiceEntry(
-									instance,
-									"_device-info._tcp",
-									"local")
-							}
-							entries[rr.Hdr.Name].Text = rr.Txt
-							entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
+						if _, ok := entries[rr.Hdr.Name]; !ok {
+							entries[rr.Hdr.Name] = NewServiceEntry(
+								instanceName,
+								"_device-info._tcp",
+								"local")
 						}
+						entries[rr.Hdr.Name].Text = rr.Txt
+						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 					}
 					// TODO type NSEC, not necessary?
 				case *dns.A:
+					// what if we get two A records for one host?
 					for k, e := range entries {
 						if e.HostName == rr.Hdr.Name {
-							// always use newer addr
+							// always use newer addr except link-local address(169.254)?
 							entries[k].AddrIPv4 = rr.A
 						}
 					}
@@ -291,6 +300,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					delete(entries, k)
 					continue
 				}
+				// TODO check alone _device-info._tcp
 				//if e.AddrIPv4 == nil {
 				//	if c.getIPv4AddrCache(k)
 				//		e.AddrIPv4 = v
@@ -405,7 +415,7 @@ func (c *client) recv(l *net.UDPConn, msgCh chan *dns.Msg) {
 // Performs the actual query by service name (browse) or service instance name (lookup),
 func (c *client) query(params *LookupParams) error {
 	var serviceName, serviceInstanceName string
-	serviceName = fmt.Sprintf("%s.%s.", trimDot(params.Service), trimDot(params.Domain))
+	serviceName = fmt.Sprintf("%s.%s.", strings.Trim(params.Service, "."), strings.Trim(params.Domain, "."))
 	if params.Instance != "" {
 		serviceInstanceName = fmt.Sprintf("%s.%s", params.Instance, serviceName)
 	}

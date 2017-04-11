@@ -101,7 +101,7 @@ func main() {
 				if entry.HostName != "" {
 					// alway trust newer address because of expired cache
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
-						// note that entry is a pointer, so we can modify the entry directly
+						// note that entry is a pointer, so we can modify the struct directly
 						entry.AddrIPv4 = addr
 					}
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {

@@ -68,9 +68,11 @@ var services = []string{
 	"_homekit._tcp",
 	"_sftp-ssh._tcp",
 	"_ssh._tcp",
+	"_http._tcp",
+	"_gamecenter._tcp",
 }
 
-func queryiDeviceType(txt string) (specs string) {
+func queryiDeviceSpecs(txt string) (specs string) {
 	if nPos := strings.Index(txt, "model="); nPos != -1 {
 		model := txt[nPos+len("model="):]
 		if v, ok := BoardConfigList[model]; ok {
@@ -81,15 +83,15 @@ func queryiDeviceType(txt string) (specs string) {
 	return
 }
 
-// trimDot is used to trim the dots from the start or end of a string
+// trimDot removes all leading and trailing dots
 func trimDot(s string) string {
 	return strings.Trim(s, ".")
 }
 
 // becasue service instance name string may contain escaped dot, so we can't simply
 // call strings.Split(name, ".")
-func parseServiceName(name string) (domain, st, instance string, err error) {
-	s := strings.Trim(name, ".")
+func parseServiceName(name string) (instance, serviceType, domain string, err error) {
+	s := trimDot(name)
 	l := len(s)
 	var ss []string
 	for {
@@ -100,7 +102,7 @@ func parseServiceName(name string) (domain, st, instance string, err error) {
 			if len(ss) >= 3 {
 				// done
 				domain = ss[0]
-				st = ss[2] + "." + ss[1]
+				serviceType = ss[2] + "." + ss[1]
 				instance = s[:l]
 				break
 			}
@@ -113,6 +115,8 @@ func parseServiceName(name string) (domain, st, instance string, err error) {
 	return
 }
 
+// reverseIPv4 extract IPv4 from the reversed octets
+// with special suffix in-addr.arpa (such as 4.3.2.1.in-addr.arpa)
 func reverseIPv4(s string) string {
 	words := strings.Split(s, ".")
 	for i, j := 0, len(words)-1; i < j; i, j = i+1, j-1 {
