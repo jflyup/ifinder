@@ -2,10 +2,11 @@ package main
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 )
 
-var BoardConfigList = map[string]string{
+var modelList = map[string]string{
 	"J1AP":   "iPad (3rd generation)",
 	"J33AP":  "Apple TV (3rd generation), early 2012",
 	"J33IAP": "revised version of the Apple TV (3rd generation), early 2013",
@@ -75,7 +76,7 @@ var services = []string{
 func queryiDeviceSpecs(txt string) (specs string) {
 	if nPos := strings.Index(txt, "model="); nPos != -1 {
 		model := txt[nPos+len("model="):]
-		if v, ok := BoardConfigList[model]; ok {
+		if v, ok := modelList[model]; ok {
 			specs = v
 		}
 	}
@@ -123,4 +124,10 @@ func reverseIPv4(s string) string {
 		words[i], words[j] = words[j], words[i]
 	}
 	return strings.Join(words, ".")
+}
+
+// return true if s contain only letters, numbers, and hyphen
+func checkInstanceName(s string) bool {
+	alphaNumericHyphen := regexp.MustCompile(`^[-A-Za-z0-9]+$`).MatchString
+	return alphaNumericHyphen(s)
 }

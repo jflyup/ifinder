@@ -46,7 +46,7 @@ func main() {
 	chResult := make(chan *ServiceEntry)
 	go resolver.Run(chResult)
 
-	// send every 300ms as Fing does
+	// send every 500ms as Fing does
 	ticker := time.NewTicker(time.Millisecond * 500)
 	go func() {
 		for {

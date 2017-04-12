@@ -12,13 +12,13 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
-// Main client data structure to run browse/lookup queries
+// Resolver is the client to run queries
 type Resolver struct {
 	c    *client
 	Exit chan<- bool
 }
 
-// Resolver structure constructor
+// NewResolver constructs a Resolver
 func NewResolver(iface *net.Interface) (*Resolver, error) {
 	c, err := newClient(iface)
 	if err != nil {
@@ -44,7 +44,7 @@ func (r *Resolver) Browse(service, domain string, entries chan<- *ServiceEntry) 
 	return nil
 }
 
-func (r *Resolver) Lookup(instance, service, domain string) error {
+func (r *Resolver) lookup(instance, service, domain string) error {
 	params := defaultParams(service)
 	params.Instance = instance
 	if domain != "" {
@@ -61,6 +61,7 @@ func (r *Resolver) Lookup(instance, service, domain string) error {
 	return nil
 }
 
+// Run starts to process packets
 func (r *Resolver) Run(entries chan<- *ServiceEntry) {
 	r.c.mainloop(entries)
 }
@@ -211,7 +212,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					} else if strings.HasSuffix(rr.Ptr, rr.Hdr.Name) {
 						// service instance
 						if _, ok := ptrEntries[rr.Ptr]; !ok {
-							log.Printf("Ptr: %+v", rr)
+							//log.Printf("Ptr: %+v", rr)
 							ptrEntries[rr.Ptr] = 1
 						}
 						m := new(dns.Msg)
@@ -230,6 +231,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 
 				case *dns.SRV:
 					// name compression is processed by github.com/miekg/dns
+
 					// TODO: instance name with unicode is converted to decimal base label
 					if instance, st, domain, err := parseServiceName(rr.Hdr.Name); err == nil {
 						// use rr.Hdr.Name as key since one host can publish multiple services
@@ -255,11 +257,11 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						// Typically, the first DNS name label is the default service instance name
 						// and can contain any Unicode characters encoded in UTF-8.
 						// you know there are always exceptions when we say typically.
-						// iPhone/iPad announces some services(such as _apple-mobdev2._tcp, _homekit._tcp)
-						// using special instance name(for example,
-						// 8F6A27C9-D8D8-5AEF-A290-B47710052FF4._homekit._tcp.local),
+						// iPhone/iPad advertises some services(such as _apple-mobdev2._tcp, _homekit._tcp)
+						// using special instance name(for example, _apple-mobdev2._tcp uses mac+ipv6 as it,
+						// 90:72:40:ba:0b:e9\@fe80::9272:40ff:feba:be9._apple-mobdev2._tcp.local),
 						// then this TXT record chooses another instance name or use hostname as
-						// instance name.
+						// instance name. So if it chooses another instance name, things get complicated.
 						instanceName := rr.Hdr.Name[:pos]
 						if len(rr.Txt) > 0 {
 							c.setDeviceInfo(c.deviceInfo[instanceName], rr.Txt[0])
@@ -295,12 +297,29 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 		}
 
 		if len(entries) > 0 {
+			// we need a set/multiset here, shamelessly go doesn't provide one
+			instanceSet := make(map[string]bool)
+			hostnameSet := make(map[string]bool)
+
+			var deviceInfos []*ServiceEntry
 			for k, e := range entries {
 				if e.TTL == 0 {
 					delete(entries, k)
 					continue
 				}
-				// TODO check alone _device-info._tcp
+				// check if _device-info._tcp record is alone
+
+				// devices register a _device-info record when at least one service is advertised,
+				// but according to what I observed in Wireshark, iPhone/iPad sometimes advertises
+				// only a _device-info._tcp record, so in this scenario, we try to find related
+				// services
+				if e.Service == "_device-info._tcp" {
+					deviceInfos = append(deviceInfos, e)
+
+				} else {
+					instanceSet[e.Instance] = true
+					hostnameSet[e.HostName] = true
+				}
 				//if e.AddrIPv4 == nil {
 				//	if c.getIPv4AddrCache(k)
 				//		e.AddrIPv4 = v
@@ -312,6 +331,29 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 				//	}
 				//}
 				result <- e
+			}
+
+			for _, device := range deviceInfos {
+				if _, ok := instanceSet[device.Instance]; !ok {
+					// first we check the instance name, if it contains only letters, numbers,
+					// and hyphen, maybe it's the exact hostname
+
+					log.Printf("find alone device-info")
+					if checkInstanceName(device.Instance) {
+						if _, ok := hostnameSet[device.Instance]; !ok {
+							// try to find a companion for this TXT record
+							for _, s := range services {
+								m := new(dns.Msg)
+								ptr := device.Instance + "." + s + ".local"
+								m.SetQuestion(ptr, dns.TypeANY)
+								m.RecursionDesired = false
+								if err := c.sendQuery(m); err != nil {
+									log.Printf("Failed to query instance %s", ptr)
+								}
+							}
+						}
+					}
+				}
 			}
 			// reset entries
 			entries = make(map[string]*ServiceEntry)
@@ -426,13 +468,13 @@ func (c *client) query(params *LookupParams) error {
 		if params.Rrtype != 0 {
 			m.Question = []dns.Question{
 				// unicast question?
-				dns.Question{serviceInstanceName, params.Rrtype, dns.ClassINET},
+				dns.Question{Name: serviceInstanceName, Qtype: params.Rrtype, Qclass: dns.ClassINET},
 			}
 		} else {
 			// query ANY type?
 			m.Question = []dns.Question{
-				dns.Question{serviceInstanceName, dns.TypeSRV, dns.ClassINET},
-				dns.Question{serviceInstanceName, dns.TypeTXT, dns.ClassINET},
+				dns.Question{Name: serviceInstanceName, Qtype: dns.TypeSRV, Qclass: dns.ClassINET},
+				dns.Question{Name: serviceInstanceName, Qtype: dns.TypeTXT, Qclass: dns.ClassINET},
 			}
 		}
 		m.RecursionDesired = false
