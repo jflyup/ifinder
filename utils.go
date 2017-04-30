@@ -116,9 +116,10 @@ func parseServiceName(name string) (instance, serviceType, domain string, err er
 	return
 }
 
-// reverseIPv4 extract IPv4 from the reversed octets
+// extractIPv4 extract IPv4 from the reversed octets
 // with special suffix in-addr.arpa (such as 4.3.2.1.in-addr.arpa)
-func reverseIPv4(s string) string {
+func extractIPv4(ptr string) string {
+	s := strings.Replace(ptr, ".in-addr.arpa", "", 1)
 	words := strings.Split(s, ".")
 	for i, j := 0, len(words)-1; i < j; i, j = i+1, j-1 {
 		words[i], words[j] = words[j], words[i]

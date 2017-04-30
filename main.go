@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"os"
+	"os/signal"
+	"sync/atomic"
 
 	"flag"
 	"net"
@@ -46,7 +48,22 @@ func main() {
 	chResult := make(chan *ServiceEntry)
 	go resolver.Run(chResult)
 
-	// send every 500ms as Fing does
+	c := make(chan os.Signal, 1)
+	// The only signal values guaranteed to be present on all systems are
+	// Interrupt (send the process an interrupt) and Kill (force the process to exit).
+	signal.Notify(c, os.Kill, os.Interrupt)
+	go func() {
+		for sig := range c {
+			log.Printf("recv signal %v", sig)
+			// dump statistics
+			log.Printf("ipv4 packets: %d", atomic.LoadUint32(&resolver.c.ipv4MsgCount))
+			log.Printf("ipv6 packets: %d", atomic.LoadUint32(&resolver.c.ipv6MsgCount))
+			log.Printf("unicast packets: %d", atomic.LoadUint32(&resolver.c.unicastMsgCount))
+			os.Exit(0)
+		}
+	}()
+
+	// send every 500ms
 	ticker := time.NewTicker(time.Millisecond * 500)
 	go func() {
 		for {

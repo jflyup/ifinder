@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
 	"golang.org/x/net/ipv4"
@@ -73,18 +74,19 @@ func defaultParams(service string) *LookupParams {
 
 // Client structure incapsulates both IPv4/IPv6 UDP connections
 type client struct {
-	ipv4conn       *net.UDPConn
-	ipv6conn       *net.UDPConn
-	scopeIDs       []int // for ipv6 link-local multicast
-	closed         bool
-	closedCh       chan bool
-	closeLock      sync.Mutex
-	ipv4Lock       sync.Mutex
-	ipv6Lock       sync.Mutex
-	ipv4AddrCache  map[string]net.IP
-	ipv6AddrCache  map[string]net.IP
-	deviceInfoLock sync.Mutex
-	deviceInfo     map[string]string
+	ipv4conn        *net.UDPConn
+	ipv6conn        *net.UDPConn
+	scopeIDs        []int // for ipv6 link-local multicast
+	closed          bool
+	closedCh        chan bool
+	closeLock       sync.Mutex
+	ipv4Lock        sync.Mutex
+	ipv6Lock        sync.Mutex
+	ipv4AddrCache   map[string]net.IP
+	ipv6AddrCache   map[string]net.IP
+	ipv4MsgCount    uint32
+	ipv6MsgCount    uint32
+	unicastMsgCount uint32
 }
 
 // Client structure constructor
@@ -93,6 +95,9 @@ func newClient(iface *net.Interface) (*client, error) {
 	// well-known port assigned to mDNS). Multicast DNS implementations
 	// MUST silently ignore any Multicast DNS responses they receive where
 	// the source UDP port is not 5353.
+
+	// TODO we should check if we can use udp port 5353 exclusively(it's not so convenient in go),
+	// only if yes, we can receive unicast response(rfc 6762#section-15.1)
 	ipv4conn, err := net.ListenUDP("udp4", mdnsWildcardAddrIPv4)
 	if err != nil {
 		log.Printf("Failed to bind to udp4 port: %v", err)
@@ -116,6 +121,8 @@ func newClient(iface *net.Interface) (*client, error) {
 		if err := p2.JoinGroup(iface, &net.UDPAddr{IP: mdnsGroupIPv6}); err != nil {
 			return nil, err
 		}
+		p1.SetMulticastLoopback(false)
+		p2.SetMulticastLoopback(false)
 	} else {
 		ifaces, err := net.Interfaces()
 		if err != nil {
@@ -144,12 +151,14 @@ func newClient(iface *net.Interface) (*client, error) {
 			if err := p1.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv4}); err != nil {
 				log.Printf("can't join ipv4 multicast group on interface %s", iface.Name)
 			}
+			p1.SetMulticastLoopback(false)
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.IsLinkLocalUnicast() {
 					// if the interface has a link-local ipv6 address
 					if err := p2.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv6}); err != nil {
 						log.Printf("can't join ipv6 linklocal multicast group on interface %s", iface.Name)
 					} else {
+						p2.SetMulticastLoopback(false)
 						// using index as Scope ID
 						scopeIDs = append(scopeIDs, iface.Index)
 						break
@@ -165,7 +174,6 @@ func newClient(iface *net.Interface) (*client, error) {
 		closedCh:      make(chan bool),
 		ipv4AddrCache: make(map[string]net.IP),
 		ipv6AddrCache: make(map[string]net.IP),
-		deviceInfo:    make(map[string]string),
 	}
 
 	return c, nil
@@ -223,7 +231,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						}
 					} else if strings.Contains(rr.Hdr.Name, ".in-addr.arpa") {
 						// always trust newer address
-						s := reverseIPv4(strings.Replace(rr.Hdr.Name, ".in-addr.arpa", "", 1))
+						s := extractIPv4(rr.Hdr.Name)
 						c.setIPv4AddrCache(rr.Ptr, net.ParseIP(trimDot(s)))
 					} else if strings.Contains(rr.Hdr.Name, "ip6.arpa") {
 						// TODO pull out IPv6
@@ -256,16 +264,12 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						// it's tricky to connect this TXT record with a host.
 						// Typically, the first DNS name label is the default service instance name
 						// and can contain any Unicode characters encoded in UTF-8.
-						// you know there are always exceptions when we say typically.
 						// iPhone/iPad advertises some services(such as _apple-mobdev2._tcp, _homekit._tcp)
 						// using special instance name(for example, _apple-mobdev2._tcp uses mac+ipv6 as it,
 						// 90:72:40:ba:0b:e9\@fe80::9272:40ff:feba:be9._apple-mobdev2._tcp.local),
 						// then this TXT record chooses another instance name or use hostname as
-						// instance name. So if it chooses another instance name, things get complicated.
+						// instance name. If it's so, things get complicated.
 						instanceName := rr.Hdr.Name[:pos]
-						if len(rr.Txt) > 0 {
-							c.setDeviceInfo(c.deviceInfo[instanceName], rr.Txt[0])
-						}
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(
 								instanceName,
@@ -275,7 +279,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						entries[rr.Hdr.Name].Text = rr.Txt
 						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 					}
-					// TODO type NSEC, not necessary?
+					// type NSEC, not used.
 				case *dns.A:
 					// what if we get two A records for one host?
 					for k, e := range entries {
@@ -310,47 +314,34 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 				// check if _device-info._tcp record is alone
 
 				// devices register a _device-info record when at least one service is advertised,
-				// but according to what I observed in Wireshark, iPhone/iPad sometimes advertises
-				// only a _device-info._tcp record, so in this scenario, we try to find related
-				// services
+				// but according to what I see in Wireshark, some iPhone/iPads sometimes advertise
+				// only a _device-info._tcp record, so we don't know who advertises it, in this scenario,
+				// try to ask a question requesting unicast responses(rfc 6762#section-5.4), then we may
+				// get the device ip
 				if e.Service == "_device-info._tcp" {
 					deviceInfos = append(deviceInfos, e)
-
 				} else {
 					instanceSet[e.Instance] = true
 					hostnameSet[e.HostName] = true
 				}
-				//if e.AddrIPv4 == nil {
-				//	if c.getIPv4AddrCache(k)
-				//		e.AddrIPv4 = v
-				//	}
-				//}
-				//if e.AddrIPv6 == nil {
-				//	if v, ok := c.ipv6AddrCache[k]; ok {
-				//		e.AddrIPv6 = v
-				//	}
-				//}
+
 				result <- e
 			}
 
 			for _, device := range deviceInfos {
 				if _, ok := instanceSet[device.Instance]; !ok {
+					// request unicast response
+					m := new(dns.Msg)
+					m.SetQuestion(device.ServiceInstanceName(), dns.TypeTXT)
+					m.RecursionDesired = false
+					if err := c.sendUnicastQuery(m); err != nil {
+						log.Printf("Failed to send question %s requesting unicast response", device.ServiceInstanceName())
+					}
 					// first we check the instance name, if it contains only letters, numbers,
-					// and hyphen, maybe it's the exact hostname
-
-					log.Printf("find alone device-info")
+					// and hyphen, maybe it's hostname
 					if checkInstanceName(device.Instance) {
 						if _, ok := hostnameSet[device.Instance]; !ok {
-							// try to find a companion for this TXT record
-							for _, s := range services {
-								m := new(dns.Msg)
-								ptr := device.Instance + "." + s + ".local"
-								m.SetQuestion(ptr, dns.TypeANY)
-								m.RecursionDesired = false
-								if err := c.sendQuery(m); err != nil {
-									log.Printf("Failed to query instance %s", ptr)
-								}
-							}
+							// ptr lookup?
 						}
 					}
 				}
@@ -393,22 +384,6 @@ func (c *client) setIPv6AddrCache(host string, ipv6 net.IP) {
 	c.ipv6AddrCache[host] = ipv6
 }
 
-func (c *client) setDeviceInfo(host, info string) {
-	c.deviceInfoLock.Lock()
-	defer c.deviceInfoLock.Unlock()
-	c.deviceInfo[host] = info
-}
-
-func (c *client) getDeviceInfo(host string) string {
-	c.deviceInfoLock.Lock()
-	defer c.deviceInfoLock.Unlock()
-	if info, ok := c.deviceInfo[host]; ok {
-		return info
-	}
-
-	return ""
-}
-
 // Shutdown client will close currently open connections & channel
 func (c *client) shutdown() {
 	c.closeLock.Lock()
@@ -436,15 +411,24 @@ func (c *client) recv(l *net.UDPConn, msgCh chan *dns.Msg) {
 	}
 	buf := make([]byte, 65536)
 	for !c.closed {
-		n, _, err := l.ReadFrom(buf)
+		n, addr, err := l.ReadFrom(buf)
 		if err != nil {
 			continue
 		}
 		msg := new(dns.Msg)
 		if err := msg.Unpack(buf[:n]); err != nil {
 			// TODO handle Windows 10 mDNS bug later
-			//log.Printf("[ERR] mdns: Failed to unpack packet: %v, packet: %d:%v", err, n, buf[:n])
+			//log.Printf("Failed to unpack packet: %v, packet: %d:%v", err, n, buf[:n])
 			continue
+		}
+
+		// statistics of ipv4/ipv6 packets
+		if addr.String() == ipv4Addr.String() {
+			atomic.AddUint32(&c.ipv4MsgCount, 1)
+		} else if addr.String() == ipv6Addr.String() {
+			atomic.AddUint32(&c.ipv6MsgCount, 1)
+		} else {
+			atomic.AddUint32(&c.unicastMsgCount, 1)
 		}
 		select {
 		case msgCh <- msg:
@@ -499,6 +483,40 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 	// ignores the Query ID field
 	buf[0] = 0
 	buf[1] = 0
+	if c.ipv4conn != nil {
+		if _, err := c.ipv4conn.WriteTo(buf, ipv4Addr); err != nil {
+			log.Printf("c.ipv4conn.WriteTo error: %v", err)
+			return err
+		}
+	}
+	if c.ipv6conn != nil {
+		addr := ipv6Addr
+		for _, scope := range c.scopeIDs {
+			addr.Zone = fmt.Sprintf("%d", scope)
+			if _, err := c.ipv6conn.WriteTo(buf, addr); err != nil {
+				log.Printf("c.ipv6conn.WriteTo error: %v", err)
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// rfc 6762#section-5.4(Questions Requesting Unicast Responses)
+func (c *client) sendUnicastQuery(msg *dns.Msg) error {
+	// set unicast-response bit
+	msg.Question[0].Qclass |= 0x8000
+	buf, err := msg.Pack()
+
+	if err != nil {
+		return err
+	}
+
+	// rfc 6762#section-6.7, query ID is only used in Legacy Unicast Responses
+	buf[0] = 0
+	buf[1] = 0
+
+	// doesn't implement #section-5.5(Direct Unicast Queries to Port 5353)
 	if c.ipv4conn != nil {
 		if _, err := c.ipv4conn.WriteTo(buf, ipv4Addr); err != nil {
 			log.Printf("c.ipv4conn.WriteTo error: %v", err)
