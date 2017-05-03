@@ -49,17 +49,23 @@ func main() {
 	go resolver.Run(chResult)
 
 	c := make(chan os.Signal, 1)
+	// for Windows
+	statTicker := time.NewTicker(time.Second * 60)
 	// The only signal values guaranteed to be present on all systems are
 	// Interrupt (send the process an interrupt) and Kill (force the process to exit).
 	signal.Notify(c, os.Kill, os.Interrupt)
 	go func() {
-		for sig := range c {
-			log.Printf("recv signal %v", sig)
-			// dump statistics
-			log.Printf("ipv4 packets: %d", atomic.LoadUint32(&resolver.c.ipv4MsgCount))
-			log.Printf("ipv6 packets: %d", atomic.LoadUint32(&resolver.c.ipv6MsgCount))
-			log.Printf("unicast packets: %d", atomic.LoadUint32(&resolver.c.unicastMsgCount))
-			os.Exit(0)
+		for {
+			select {
+			case <-c:
+				// dump statistics
+				log.Printf("ipv4 packets: %d", atomic.LoadUint32(&resolver.c.ipv4MsgCount))
+				log.Printf("ipv6 packets: %d", atomic.LoadUint32(&resolver.c.ipv6MsgCount))
+				os.Exit(0)
+			case <-statTicker.C:
+				log.Printf("ipv4 packets: %d", atomic.LoadUint32(&resolver.c.ipv4MsgCount))
+				log.Printf("ipv6 packets: %d", atomic.LoadUint32(&resolver.c.ipv6MsgCount))
+			}
 		}
 	}()
 

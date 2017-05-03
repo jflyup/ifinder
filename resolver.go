@@ -74,19 +74,18 @@ func defaultParams(service string) *LookupParams {
 
 // Client structure incapsulates both IPv4/IPv6 UDP connections
 type client struct {
-	ipv4conn        *net.UDPConn
-	ipv6conn        *net.UDPConn
-	scopeIDs        []int // for ipv6 link-local multicast
-	closed          bool
-	closedCh        chan bool
-	closeLock       sync.Mutex
-	ipv4Lock        sync.Mutex
-	ipv6Lock        sync.Mutex
-	ipv4AddrCache   map[string]net.IP
-	ipv6AddrCache   map[string]net.IP
-	ipv4MsgCount    uint32
-	ipv6MsgCount    uint32
-	unicastMsgCount uint32
+	ipv4conn      *net.UDPConn
+	ipv6conn      *net.UDPConn
+	scopeIDs      []int // for ipv6 link-local multicast
+	closed        bool
+	closedCh      chan bool
+	closeLock     sync.Mutex
+	ipv4Lock      sync.Mutex
+	ipv6Lock      sync.Mutex
+	ipv4AddrCache map[string]net.IP
+	ipv6AddrCache map[string]net.IP
+	ipv4MsgCount  uint32
+	ipv6MsgCount  uint32
 }
 
 // Client structure constructor
@@ -179,10 +178,16 @@ func newClient(iface *net.Interface) (*client, error) {
 	return c, nil
 }
 
+type recvedMsg struct {
+	// source address of mDNS message
+	addr    *net.UDPAddr
+	mDNSMsg *dns.Msg
+}
+
 // Start listeners and waits for the shutdown signal from exit channel
 func (c *client) mainloop(result chan<- *ServiceEntry) {
 	// start listening for responses
-	msgCh := make(chan *dns.Msg, 32)
+	msgCh := make(chan recvedMsg, 32)
 	if c.ipv4conn != nil {
 		go c.recv(c.ipv4conn, msgCh)
 	}
@@ -199,8 +204,8 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 			c.shutdown()
 		case msg := <-msgCh:
 			entries = make(map[string]*ServiceEntry)
-			sections := append(msg.Answer, msg.Ns...)
-			sections = append(sections, msg.Extra...)
+			sections := append(msg.mDNSMsg.Answer, msg.mDNSMsg.Ns...)
+			sections = append(sections, msg.mDNSMsg.Extra...)
 			for _, answer := range sections {
 				switch rr := answer.(type) {
 				case *dns.PTR:
@@ -278,14 +283,30 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						}
 						entries[rr.Hdr.Name].Text = rr.Txt
 						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
+						if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
+							entries[rr.Hdr.Name].AddrIPv4 = ipv4
+						} else {
+							entries[rr.Hdr.Name].AddrIPv6 = msg.addr.IP
+						}
 					}
 					// type NSEC, not used.
 				case *dns.A:
-					// what if we get two A records for one host?
 					for k, e := range entries {
 						if e.HostName == rr.Hdr.Name {
-							// always use newer addr except link-local address(169.254)?
-							entries[k].AddrIPv4 = rr.A
+							// always trust newer addr except link-local address(169.254.*.*)
+							if !rr.A.IsLinkLocalUnicast() {
+								entries[k].AddrIPv4 = rr.A
+							}
+						}
+					}
+
+					// Only an authoritative source for a given record is allowed
+					// to issue responses containing that record(rfc 6762#section-6),
+					// so the address returned by recvfrom() should be the same with
+					//  the advertised A record in a good implementation of mDNS
+					if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
+						if !rr.A.Equal(msg.addr.IP) {
+							log.Printf("DEBUG: A record %v != source addr %v", rr.A, msg.addr)
 						}
 					}
 					c.setIPv4AddrCache(rr.Hdr.Name, rr.A)
@@ -293,6 +314,11 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					for k, e := range entries {
 						if e.HostName == rr.Hdr.Name {
 							entries[k].AddrIPv6 = rr.AAAA
+						}
+					}
+					if ipv4 := msg.addr.IP.To4(); ipv4 == nil {
+						if !rr.AAAA.Equal(msg.addr.IP) {
+							log.Printf("DEBUG: AAAA record %v != source addr %v", rr.AAAA, msg.addr)
 						}
 					}
 					c.setIPv6AddrCache(rr.Hdr.Name, rr.AAAA)
@@ -365,7 +391,10 @@ func (c *client) getIPv4AddrCache(host string) net.IP {
 func (c *client) setIPv4AddrCache(host string, ipv4 net.IP) {
 	c.ipv4Lock.Lock()
 	defer c.ipv4Lock.Unlock()
-	c.ipv4AddrCache[host] = ipv4
+	// we don't want ipv4 link-local addr
+	if !ipv4.IsLinkLocalUnicast() {
+		c.ipv4AddrCache[host] = ipv4
+	}
 }
 
 func (c *client) getIPv6AddrCache(host string) net.IP {
@@ -405,33 +434,32 @@ func (c *client) shutdown() {
 
 // Data receiving routine reads from connection, unpacks packets into dns.Msg
 // structures and sends them to a given msgCh channel
-func (c *client) recv(l *net.UDPConn, msgCh chan *dns.Msg) {
+func (c *client) recv(l *net.UDPConn, msgCh chan recvedMsg) {
 	if l == nil {
 		return
 	}
 	buf := make([]byte, 65536)
 	for !c.closed {
-		n, addr, err := l.ReadFrom(buf)
+		n, raddr, err := l.ReadFrom(buf)
 		if err != nil {
 			continue
 		}
-		msg := new(dns.Msg)
-		if err := msg.Unpack(buf[:n]); err != nil {
+		udpAddr, _ := raddr.(*net.UDPAddr)
+		mDNSMsg := new(dns.Msg)
+		if err := mDNSMsg.Unpack(buf[:n]); err != nil {
 			// TODO handle Windows 10 mDNS bug later
 			//log.Printf("Failed to unpack packet: %v, packet: %d:%v", err, n, buf[:n])
 			continue
 		}
 
 		// statistics of ipv4/ipv6 packets
-		if addr.String() == ipv4Addr.String() {
-			atomic.AddUint32(&c.ipv4MsgCount, 1)
-		} else if addr.String() == ipv6Addr.String() {
+		if strings.Contains(raddr.String(), "%") {
 			atomic.AddUint32(&c.ipv6MsgCount, 1)
 		} else {
-			atomic.AddUint32(&c.unicastMsgCount, 1)
+			atomic.AddUint32(&c.ipv4MsgCount, 1)
 		}
 		select {
-		case msgCh <- msg:
+		case msgCh <- recvedMsg{addr: udpAddr, mDNSMsg: mDNSMsg}:
 		case <-c.closedCh:
 			return
 		}
@@ -451,7 +479,6 @@ func (c *client) query(params *LookupParams) error {
 	if serviceInstanceName != "" {
 		if params.Rrtype != 0 {
 			m.Question = []dns.Question{
-				// unicast question?
 				dns.Question{Name: serviceInstanceName, Qtype: params.Rrtype, Qclass: dns.ClassINET},
 			}
 		} else {
