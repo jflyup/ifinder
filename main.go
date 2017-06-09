@@ -13,8 +13,8 @@ import (
 
 func main() {
 	var ifaceName = flag.String("i", "", "interface name")
-	var logFile = flag.String("o", "", "log file")
-	var dumpEntry = flag.Bool("d", false, "dump all service entries")
+	var logFile = flag.String("o", "", "output file")
+	var serviceType = flag.String("t", "", "service type to browse")
 	flag.Parse()
 
 	if len(*logFile) != 0 {
@@ -75,7 +75,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				err = resolver.Browse("_services._dns-sd._udp", "local.", chResult)
+				err = resolver.Browse(metaQuery, "local.", chResult)
 				if err != nil {
 					log.Println("Failed to browse:", err.Error())
 				}
@@ -89,7 +89,7 @@ func main() {
 		for {
 			select {
 			case <-t.C:
-				for _, s := range services {
+				for _, s := range appleServices {
 					err = resolver.Browse(s, "local", chResult)
 					if err != nil {
 						log.Println("Failed to browse:", err.Error())
@@ -115,10 +115,14 @@ func main() {
 		select {
 		case r := <-chResult:
 			if entry, ok := entries[r.ServiceInstanceName()]; !ok {
-				if *dumpEntry {
-					// TODO ipv4 may change
-					log.Printf("service: %s ipv4: %v ipv6: %v, TTL: %d, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.TTL, r.Text, r.HostName)
+				if *serviceType != "" {
+					if *serviceType != r.Service {
+						break
+					}
 				}
+				// TODO ipv4 may change
+				log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s", r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+
 				entries[r.ServiceInstanceName()] = r
 			} else {
 				if entry.HostName != "" {

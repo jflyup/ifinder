@@ -264,7 +264,6 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					// we have little interest in TXT record except _device_info._tcp
 					// pseudo service (it's a TXT record)
 
-					// this syntax sugar is so sweet
 					if pos := strings.Index(rr.Hdr.Name, "._device-info._tcp."); pos != -1 {
 						// it's tricky to connect this TXT record with a host.
 						// Typically, the first DNS name label is the default service instance name
@@ -273,21 +272,22 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						// using special instance name(for example, _apple-mobdev2._tcp uses mac+ipv6 as it,
 						// 90:72:40:ba:0b:e9\@fe80::9272:40ff:feba:be9._apple-mobdev2._tcp.local),
 						// then this TXT record chooses another instance name or use hostname as
-						// instance name. If it's so, things get complicated.
+						// instance name. If so, things get complicated.
 						instanceName := rr.Hdr.Name[:pos]
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(
 								instanceName,
 								"_device-info._tcp",
 								"local")
+							entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
+							if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
+								entries[rr.Hdr.Name].AddrIPv4 = ipv4
+							} else {
+								entries[rr.Hdr.Name].AddrIPv6 = msg.addr.IP
+							}
 						}
+						// don't append, just overwrite
 						entries[rr.Hdr.Name].Text = rr.Txt
-						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
-						if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
-							entries[rr.Hdr.Name].AddrIPv4 = ipv4
-						} else {
-							entries[rr.Hdr.Name].AddrIPv6 = msg.addr.IP
-						}
 					}
 					// type NSEC, not used.
 				case *dns.A:
@@ -362,13 +362,6 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					m.RecursionDesired = false
 					if err := c.sendUnicastQuery(m); err != nil {
 						log.Printf("Failed to send question %s requesting unicast response", device.ServiceInstanceName())
-					}
-					// first we check the instance name, if it contains only letters, numbers,
-					// and hyphen, maybe it's hostname
-					if checkInstanceName(device.Instance) {
-						if _, ok := hostnameSet[device.Instance]; !ok {
-							// ptr lookup?
-						}
 					}
 				}
 			}

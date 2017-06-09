@@ -33,23 +33,14 @@ var (
 
 // ServiceRecord contains the basic description of a service, which contains instance name, service type & domain
 type ServiceRecord struct {
-	Instance string `json:"name"`   // Instance name (e.g. "My web page")
-	Service  string `json:"type"`   // Service name (e.g. _http._tcp.)
-	Domain   string `json:"domain"` // If blank, assumes "local"
+	Instance string // Instance name (e.g. "My web page")
+	Service  string // Service name (e.g. _http._tcp.)
+	Domain   string // If blank, assumes "local"
 
 	// private variable populated on the first call to ServiceName()/ServiceInstanceName()
-	serviceName         string `json:"-"`
-	serviceInstanceName string `json:"-"`
-	serviceTypeName     string `json:"-"`
-}
-
-// ServiceName returns complete service name (e.g. _foobar._tcp.local.), which is composed
-// from a service name (also referred as service type) and a domain.
-func (s *ServiceRecord) ServiceName() string {
-	if s.serviceName == "" {
-		s.serviceName = fmt.Sprintf("%s.%s.", trimDot(s.Service), trimDot(s.Domain))
-	}
-	return s.serviceName
+	serviceName         string
+	serviceInstanceName string
+	serviceTypeName     string
 }
 
 // ServiceInstanceName returns complete service instance name (e.g. MyDemo\ Service._foobar._tcp.local.),
@@ -61,22 +52,9 @@ func (s *ServiceRecord) ServiceInstanceName() string {
 	}
 	// If not cached - compose and cache
 	if s.serviceInstanceName == "" {
-		s.serviceInstanceName = fmt.Sprintf("%s.%s", trimDot(s.Instance), s.ServiceName())
+		s.serviceInstanceName = fmt.Sprintf("%s.%s.%s", trimDot(s.Instance), s.Service, trimDot(s.Domain))
 	}
 	return s.serviceInstanceName
-}
-
-// ServiceTypeName returns complete service type name
-func (s *ServiceRecord) ServiceTypeName() string {
-	// If not cached - compose and cache
-	if s.serviceTypeName == "" {
-		domain := "local"
-		if len(s.Domain) > 0 {
-			domain = trimDot(s.Domain)
-		}
-		s.serviceTypeName = fmt.Sprintf("_services._dns-sd._udp.%s.", domain)
-	}
-	return s.serviceTypeName
 }
 
 // NewServiceRecord constructs a ServiceRecord structure by given arguments
@@ -107,12 +85,12 @@ func NewLookupParams(instance, service, domain string, entries chan<- *ServiceEn
 // used to answer multicast queries.
 type ServiceEntry struct {
 	ServiceRecord
-	HostName string   `json:"hostname"` // Host machine DNS name
-	Port     int      `json:"port"`     // Service Port
-	Text     []string `json:"text"`     // Service info served as a TXT record
-	TTL      uint32   `json:"ttl"`      // TTL of the service record
-	AddrIPv4 net.IP   `json:"-"`        // Host machine IPv4 address
-	AddrIPv6 net.IP   `json:"-"`        // Host machine IPv6 address
+	HostName string   // Host machine DNS name
+	Port     int      // Service Port
+	Text     []string // Service info served as a TXT record
+	TTL      uint32   // TTL of the service record
+	AddrIPv4 net.IP   // Host machine IPv4 address
+	AddrIPv6 net.IP   // Host machine IPv6 address
 }
 
 // NewServiceEntry constructs a ServiceEntry structure by given arguments
